@@ -1,0 +1,1357 @@
+---
+title: "Statistical Analysis Report"
+author: "Erin Sprünken"
+date: last-modified
+published-title: "Modified"
+format: 
+  html:
+    self-contained: true
+execute:
+  echo: true
+  warning: false
+---
+
+```{css, echo = FALSE}
+.justify {
+  text-align: justify !important
+}
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+
+# file name
+file <- "data/abc_data.csv"
+
+# packages
+library("ggplot2")
+library("ggalluvial")
+library("dplyr")
+library("nparcomp")
+#library("kableExtra")
+library("flextable")
+
+# ==============================================================================
+#
+# Data Loading
+#
+# ==============================================================================
+
+# load data from file
+   abc = read.csv("data/abc_data.csv", na.strings = c("", " ", "NA", "n.a.", "N/A"))
+  #abc = read.csv2("data/ABCSDHI_DATA_LABELS_2025-01-04_1651.csv", na.strings = c("", " ", "NA", "n.a.", "N/A"))
+# 
+# # ==============================================================================
+# #
+# # Data Pre-Processing
+# #
+# 
+# 
+#abc = apply(abc, 2, FUN = function(x){
+for(i in 1:ncol(abc)){
+  x = abc[,i]
+  if(any(x %in% c("rechts", "links"), na.rm = T)){
+    if(any(x == "rechts")) x[which(x == "rechts")] = "right"
+    if(any(x == "links")) x[which(x == "links")] = "left"
+    if(any(x %in% c("beidseitig", "beidseits"))) x[which(x %in% c("beidseitig", "beidseits"))] = "bilateral"
+  }
+  
+  if(any(x %in% c("Ja", "Nein", "Ausgewählt", "Nicht ausgewählt", na.rm = T))){
+    if(any(x == "Ja", na.rm = T)) (x[which(x == "Ja")] = "Yes")
+    if(any(x == "Nein", na.rm = T)) (x[which(x == "Nein")] = "No")
+    if(any(x == "Ausgewählt", na.rm = T)) (x[which(x == "Ausgewählt")] = "Yes")
+    if(any(x == "Nicht ausgewählt", na.rm = T)) (x[which(x == "Nicht ausgewählt")] = "No")
+    
+  }
+  
+  abc[,i] = x 
+}
+abc[,"Arm"][which(abc[,"Arm"] == "OP wach")] = "LA"
+abc[,"Arm"][which(abc[,"Arm"] == "OP Vollnarkose")] = "GA"
+abc[,"Arm"] = factor(abc[,"Arm"], levels = c("LA", "GA"))
+pre_post_dat = abc[seq(1,100,2),]
+fu_dat = abc[seq(2,100,2),]
+fu_dat[,"Arm"] = pre_post_dat[,"Arm"]
+
+# Remove NA columns
+  del_prepost = apply(pre_post_dat, 2, FUN = function(x) all(is.na(x)))
+  del_fu = apply(fu_dat, 2, FUN = function(x) all(is.na(x)))
+
+  pre_post_dat2 = pre_post_dat[,-which(del_prepost == T)]
+  fu_dat2 = fu_dat[,-which(del_fu == T)]
+
+# Make numeric variables true numeric (Lab Values 55 - 61)
+  pre_post_dat2[,55:61] = apply(pre_post_dat2[,55:61], 2, FUN = function(x){
+    if(is.character(x)){
+      r = gsub(",", ".", x)
+      r2 = as.numeric(r)
+      return(r2)
+    }
+  })
+
+# Make time variables a difftime-object in minutes (columns 68 - 75, 78)
+  pre_post_dat2[,c(68:75, 78)] = apply(pre_post_dat2[,c(68:75, 78)], 2, FUN = function(x){
+    as.difftime(x, format = "%H:%M", units = "mins")
+  })
+
+
+# Make ordinal variables to a numeric for a more feasible analysis
+  # Markwalder, mRS, Clavien-Dindo
+  markw_ind_pp = which(grepl("Markwalder", colnames(pre_post_dat2)) == T)
+  mrs_ind_pp   = which(grepl("mRS", colnames(pre_post_dat2)) == T)
+  clav_ind_pp  = which(grepl("Clavien", colnames(pre_post_dat2)) == T)
+
+  pre_post_dat2[,c(markw_ind_pp, mrs_ind_pp)] = apply(pre_post_dat2[,c(markw_ind_pp, mrs_ind_pp)], 2, FUN = function(x){
+    as.numeric(lapply(strsplit(x, ":"), `[[`, 1))
+  })
+
+  # Clavien Dindo
+  temp = lapply(strsplit(pre_post_dat2[,clav_ind_pp], ":"), `[[`, 1)
+  y = factor(unlist(temp), levels = c("Grad I", "Grad II", "Grad IIIa", "Grad IIIb", "Grad IVa", "Grad IVb", "Grad V"), labels = c("Grade I", "Grade II", "Grade IIIa", "Grade IIIb", "Grade IVa", "Grade IVb", "Grade V"), ordered = T)
+  pre_post_dat2[,clav_ind_pp] = (y)
+
+
+  markw_ind_fu = which(grepl("Markwalder", colnames(fu_dat2)) == T)
+  mrs_ind_fu   = which(grepl("mRS", colnames(fu_dat2)) == T)
+  clav_ind_fu  = which(grepl("Clavien", colnames(fu_dat2)) == T)
+
+  fu_dat2[,c(markw_ind_fu, mrs_ind_fu)] = apply(fu_dat2[,c(markw_ind_fu, mrs_ind_fu)], 2, FUN = function(x){
+    as.numeric(lapply(strsplit(x, ":"), `[[`, 1))
+  })
+  # CCI:
+  fu_dat2[,17] = as.numeric(sapply(strsplit(fu_dat2[,17], " "), `[[`, 1))
+
+  # Clavien Dindo
+  temp = lapply(strsplit(fu_dat2[,clav_ind_fu], ":"), `[[`, 1)
+  y = factor(unlist(temp), levels = c("Grad I", "Grad II", "Grad IIIa", "Grad IIIb", "Grad IVa", "Grad IVb", "Grad V"), labels = c("Grade I", "Grade II", "Grade IIIa", "Grade IIIb", "Grade IVa", "Grade IVb", "Grade V"), ordered = T)
+  fu_dat2[,clav_ind_fu] = (y)
+
+  # Carry Death forward: 48, 97 (mrs base, mrs post) == 6
+  death_ids_post = pre_post_dat2[which(pre_post_dat2[,48] == 6 | pre_post_dat2[,97] == 6),1]
+  if(length(death_ids_post) > 0){
+    for(i in 1:length(death_ids_post)){
+      fu_dat2[which(fu_dat2[,1] == death_ids_post[i]),8] = 6 # mRS
+      fu_dat2[which(fu_dat2[,1] == death_ids_post[i]),7] = NA # GCS
+      fu_dat2[which(fu_dat2[,1] == death_ids_post[i]),9] = NA # Markwalder
+      fu_dat2[which(fu_dat2[,1] == death_ids_post[i]),16] = "Grade V" # Clavien
+      fu_dat2[which(fu_dat2[,1] == death_ids_post[i]),17] = 100 # CCI
+    }
+  }
+
+  # Set GCS of dead people to NA
+  if(length(death_ids_post) > 0){
+    for(i in 1:length(death_ids_post)){
+      pre_post_dat2[which(pre_post_dat2[,1] == death_ids_post[i]),96] = NA
+    }
+  }
+
+  # Death of FU -> mRS and Complications + Clavien 5 + CCI 100
+    #who dies in 30 FU
+    fu_dat2[27,5] = "Yes"
+    death_ids_fu = fu_dat2[which(fu_dat2[,5] == "Yes"),1]
+    if(length(death_ids_fu) > 0){
+      for(i in 1:length(death_ids_fu)){
+        fu_dat2[which(fu_dat2[,1] == death_ids_fu[i]),c(7,9)] = NA
+        fu_dat2[which(fu_dat2[,1] == death_ids_fu[i]),8] = 6
+        fu_dat2[which(fu_dat[,1] == death_ids_fu[i]), 10] = "Yes"
+        fu_dat2[which(fu_dat2[,1] == death_ids_fu[i]),16] = "Grade V"
+        fu_dat2[which(fu_dat2[,1] == death_ids_fu[i]),17] = 100
+      }
+    }
+
+  # Complications
+    # Patient 27 Complication Yes in FU
+      fu_dat2[27,10] = "Yes"
+      # Post
+      complications_total_post = sum(pre_post_dat2[,88] == "Yes", na.rm = T)
+      compl_full_post = sum(pre_post_dat2[which(pre_post_dat2[,"Arm"] == "GA"),88] == "Yes", na.rm = T)
+      compl_awake_post = sum(pre_post_dat2[which(pre_post_dat2[,"Arm"] == "LA"),88] == "Yes", na.rm = T)
+
+      # FU
+      complications_total_fu = sum(fu_dat2[,10] == "Yes", na.rm = T)
+      compl_full_fu = sum(fu_dat2[which(fu_dat2[,"Arm"] == "GA"),10] == "Yes", na.rm = T)
+      compl_awake_fu = sum(fu_dat2[which(fu_dat2[,"Arm"] == "LA"),10] == "Yes", na.rm = T)
+
+  # Dead
+      # Post
+      dead_total_post = sum(pre_post_dat2[,97] == 6, na.rm = T)
+      dead_full_post = sum(pre_post_dat2[which(pre_post_dat2[,"Arm"] == "GA"),97] == 6, na.rm = T)
+      dead_awake_post = sum(pre_post_dat2[which(pre_post_dat2[,"Arm"] == "LA"),97] == 6, na.rm = T)
+
+      # FU
+      dead_total_fu = sum(fu_dat2[,8] == 6, na.rm = T)
+      dead_full_fu = sum(fu_dat2[which(fu_dat2[,"Arm"] == "GA"), 8] == 6, na.rm = T)
+      dead_awake_fu = sum(fu_dat2[which(fu_dat2[,"Arm"] == "LA"),8] == 6, na.rm = T)
+
+# ==============================================================================
+#
+# Stat Functions
+      
+  # Baseline Tables
+      summary_cont_groups_base = function(x, grp){
+   if(is.factor(grp)){
+     grp_levels = levels(grp)
+   } else if(is.character(grp)){
+     grp_levels = unique(grp)
+   }
+   g1 = x[which(grp == grp_levels[1])]
+   g2 = x[which(grp == grp_levels[2])]
+   
+   n1 = sum(!is.na(g1))
+   n2 = sum(!is.na(g2))
+   n = sum(!is.na(x))
+
+   names = c("Mean", "SD", "Min", "25% Qt.", "Median", "75% Qt.", "Max")
+   if(any(is.na(x))) names = c(names, "NA")
+
+   # summary_g1 = c(round(mean(g1, na.rm = T), 1), round(sd(g1, na.rm = T), 1), round(summary(g1)[-4], 1))
+   # summary_g2 = c(round(mean(g2, na.rm = T), 1), round(sd(g2, na.rm = T), 1), round(summary(g2)[-4], 1))
+   # summary_tot = c(round(mean(x, na.rm = T), 1), round(sd(x, na.rm  = T),1), round(summary(x)[-4], 1))
+   
+   temp_df = data.frame(val = x, grp = grp)
+   np_ana  = nparcomp::npar.t.test(val ~ grp, temp_df, nperm = 0, info = F)
+   
+   # Confidence Intervals Mean and WMW
+   mean_1 = round(mean(g1, na.rm = T), 1)
+   sd_1 = round(sd(g1, na.rm = T), 1)
+   
+   mean_2 = round(mean(g2, na.rm = T), 1)
+   sd_2 = round(sd(g2, na.rm = T), 1)
+   
+   mean_all = round(mean(x, na.rm = T), 1)
+   sd_all = round(sd(x, na.rm = T), 1)
+   
+   ci_mean_g1 = round(mean_1 + c(-1, 1) * qt(0.975, n1 - 1) * sd_1 / sqrt(n1), 1)
+   ci_mean_g2 = round(mean_2 + c(-1, 1) * qt(0.975, n2 - 1) * sd_2 / sqrt(n2), 1)
+   ci_mean_all = round(mean_all + c(-1, 1) * qt(0.975, n - 1) * sd_all / sqrt(n), 1)
+   
+   rel_eff = round(np_ana$Analysis$Estimator, 1)
+   rel_eff_ci = round(c(np_ana$Analysis$Lower, np_ana$Analysis$Upper), 1)
+   rel_eff_pval = p_val_format(np_ana$Analysis$p.Value) # ifelse((n1 >= 4 & n2 >= 4), p_val_format(np_ana$Analysis$p.Value), NA)
+   
+   
+   summary_g1 = c(paste0(mean_1, " (", ci_mean_g1[1], ", ", ci_mean_g1[2], ")"), sd_1, round(summary(g1)[-4], 1))
+   summary_g2 = c(paste0(mean_2, " (", ci_mean_g2[1], ", ", ci_mean_g2[2], ")"), sd_2, round(summary(g2)[-4], 1))
+   summary_tot = c(paste0(mean_all, " (", ci_mean_all[1], ", ", ci_mean_all[2], ")"), sd_all, round(summary(x)[-4], 1))
+   
+   
+   if(any(is.na(g1) & all(!is.na(g2)))) summary_g2 = c(summary_g2, 0)
+   if(any(is.na(g2) & all(!is.na(g1)))) summary_g1 = c(summary_g1, 0)
+
+   ret_df = data.frame("Value" = names, grp1 = summary_g1, grp2 = summary_g2, grp_tot = summary_tot)
+   ret_df$wmw = paste0(rel_eff, " (", rel_eff_ci[1], ", ", rel_eff_ci[2], ")")
+   #ret_df$pval = rel_eff_pval
+   
+    colnames(ret_df) = c("Metric", grp_levels, "Total", "WMW Effect")
+   return(ret_df)
+      }
+      
+summary_nom_groups_base = function(x, grp, suppress_NA = FALSE, decim = 1){
+  if(suppress_NA == T){
+    handle_NA = "no"
+  } else {
+    handle_NA = "ifany"
+  }
+  
+  if(is.factor(grp)){
+     grp_levels = levels(grp)
+   } else if(is.character(grp)){
+     grp_levels = unique(grp)
+   }
+   g1 = x[which(grp == grp_levels[1])]
+   g2 = x[which(grp == grp_levels[2])]
+
+  names = c("n", "%", "% without NA")
+
+  tot_tab = table(x, grp, useNA = handle_NA)
+
+  tot_tab_woNA = table(x, grp, useNA = "no")
+
+  if(any(is.na(rownames(tot_tab)))){
+    rownames(tot_tab)[which(is.na(rownames(tot_tab)))] = "NA"
+    sum_g1_woNA = c(round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim), NA)
+    sum_g2_woNA = c(round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim), NA)
+    sum_all_woNA = c(round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim), NA)
+  } else {
+    sum_g1_woNA = round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim)
+    sum_g2_woNA = round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim)
+    sum_all_woNA = round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim)
+  }
+
+  summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim), sum_g1_woNA)
+  summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim), sum_g2_woNA)
+  summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim), sum_all_woNA)
+  
+  # if(any(is.na(rownames(tot_tab)))){
+  #   rownames(tot_tab)[which(is.na(rownames(tot_tab)))] = "NA"
+  #   sum_g1_woNA = c(round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim), NA)
+  #   sum_g2_woNA = c(round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim), NA)
+  #   sum_all_woNA = c(round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim), NA)
+  # summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim), sum_g1_woNA)
+  # summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim), sum_g2_woNA)
+  # summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim), sum_all_woNA)
+  # names = c("n", "%", "% without NA")
+  # } else {
+  #   # sum_g1_woNA = round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim)
+  #   # sum_g2_woNA = round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim)
+  #   # sum_all_woNA = round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim)
+  #   summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim))
+  # summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim))
+  # summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim))
+  #   names = c("n", "%")
+  # }
+
+  #if(sum(!is.na(g1)) >= 4 & sum(!is.na(g2)) >= 4){
+    #pval_chisq = p_val_format(chisq.test(tot_tab)$p.value)
+  #} else {
+  #  pval_chisq = NA
+  #}
+  ret_df = cbind(summary_g1, summary_g2, summary_tot)
+
+  rownames(ret_df) = rownames(tot_tab)
+  ret_df = cbind(data.frame(Value = rownames(ret_df)), ret_df)
+  colnames(ret_df) = c("Value", paste0(names, "(", grp_levels[1], ")"), paste0(names, "(", grp_levels[2], ")"), paste0(names, "(Total)"))
+  return(ret_df)
+}
+# 
+summary_ord_groups_base = function(x, grp, decim = 1, suppress_NA = FALSE){
+  if(suppress_NA == T){
+    handle_NA = "no"
+  } else {
+    handle_NA = "ifany"
+  }
+
+  if(is.factor(grp)){
+     grp_levels = levels(grp)
+   } else if(is.character(grp)){
+     grp_levels = unique(grp)
+   }
+   g1 = x[which(grp == grp_levels[1])]
+   g2 = x[which(grp == grp_levels[2])]
+   
+   n1 = sum(!is.na(g1))
+   n2 = sum(!is.na(g2))
+   
+   temp_df = data.frame(val = rank(x), grp = grp)
+   np_ana  = nparcomp::npar.t.test(val ~ grp, temp_df, nperm = 0, info = F)
+
+  names = c("n", "%", "% without NA")
+
+  tot_tab = table(x, grp, useNA = handle_NA)
+  tot_tab_woNA = table(x, grp, useNA = "no")
+  
+   rel_eff = round(np_ana$Analysis$Estimator, 1)
+   rel_eff_ci = round(c(np_ana$Analysis$Lower, np_ana$Analysis$Upper), 1)
+   #rel_eff_pval = p_val_format(np_ana$Analysis$p.Value) # ifelse((n1 >= 4 & n2 >= 4), p_val_format(np_ana$Analysis$p.Value), NA)
+
+  if(any(is.na(rownames(tot_tab)))){
+    rownames(tot_tab)[which(is.na(rownames(tot_tab)))] = "NA"
+    sum_g1_woNA = c(round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100,1), NA)
+    sum_g2_woNA = c(round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100,1), NA)
+    sum_all_woNA = c(round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, 1), NA)
+  } else {
+    sum_g1_woNA = round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100,1)
+    sum_g2_woNA = round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100,1)
+    sum_all_woNA = round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, 1)
+  }
+  summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100,1), sum_g1_woNA)
+  summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100,1), sum_g2_woNA)
+  summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, 1), sum_all_woNA)
+
+  if(!is.numeric(x) & is.ordered(x)){
+    temp_frame = data.frame(val = as.numeric(x), grp = grp)
+  } else {
+    temp_frame = data.frame(val = x, grp = grp)
+  }
+  
+  # if(any(is.na(rownames(tot_tab)))){
+  #   rownames(tot_tab)[which(is.na(rownames(tot_tab)))] = "NA"
+  #   sum_g1_woNA = c(round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim), NA)
+  #   sum_g2_woNA = c(round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim), NA)
+  #   sum_all_woNA = c(round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim), NA)
+  # summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim), sum_g1_woNA)
+  # summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim), sum_g2_woNA)
+  # summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim), sum_all_woNA)
+  # names = c("n", "%", "% without NA")
+  # } else {
+  #   # sum_g1_woNA = round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim)
+  #   # sum_g2_woNA = round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim)
+  #   # sum_all_woNA = round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim)
+  #   summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim))
+  # summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim))
+  # summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim))
+  #   names = c("n", "%")
+  # }
+  
+  ret_df = cbind(summary_g1, summary_g2, summary_tot)
+
+  rownames(ret_df) = rownames(tot_tab)
+  ret_df = cbind(data.frame(Value = rownames(ret_df)), ret_df)
+  ret_df = as.data.frame(ret_df)
+  ret_df$wmw = paste0(rel_eff, " (", rel_eff_ci[1], ", ", rel_eff_ci[2], ")")
+  #ret_df$pval = rel_eff_pval
+   
+  colnames(ret_df) = c("Value", paste0(names, "(", grp_levels[1], ")"), paste0(names, "(", grp_levels[2], ")"), paste0(names, "(Total)"), "WMW Effect")
+  return(ret_df)
+
+}
+# 
+ summary_cont_groups = function(x, grp){
+   if(is.factor(grp)){
+     grp_levels = levels(grp)
+   } else if(is.character(grp)){
+     grp_levels = unique(grp)
+   }
+   g1 = x[which(grp == grp_levels[1])]
+   g2 = x[which(grp == grp_levels[2])]
+   
+   n1 = sum(!is.na(g1))
+   n2 = sum(!is.na(g2))
+   n = sum(!is.na(x))
+
+   names = c("Mean", "SD", "Min", "25% Qt.", "Median", "75% Qt.", "Max")
+   if(any(is.na(x))) names = c(names, "NA")
+
+   # summary_g1 = c(round(mean(g1, na.rm = T), 1), round(sd(g1, na.rm = T), 1), round(summary(g1)[-4], 1))
+   # summary_g2 = c(round(mean(g2, na.rm = T), 1), round(sd(g2, na.rm = T), 1), round(summary(g2)[-4], 1))
+   # summary_tot = c(round(mean(x, na.rm = T), 1), round(sd(x, na.rm  = T),1), round(summary(x)[-4], 1))
+   
+   temp_df = data.frame(val = x, grp = grp)
+   np_ana  = nparcomp::npar.t.test(val ~ grp, temp_df, nperm = 0, info = F)
+   
+   # Confidence Intervals Mean and WMW
+   mean_1 = round(mean(g1, na.rm = T), 1)
+   sd_1 = round(sd(g1, na.rm = T), 1)
+   
+   mean_2 = round(mean(g2, na.rm = T), 1)
+   sd_2 = round(sd(g2, na.rm = T), 1)
+   
+   mean_all = round(mean(x, na.rm = T), 1)
+   sd_all = round(sd(x, na.rm = T), 1)
+   
+   ci_mean_g1 = round(mean_1 + c(-1, 1) * qt(0.975, n1 - 1) * sd_1 / sqrt(n1), 1)
+   ci_mean_g2 = round(mean_2 + c(-1, 1) * qt(0.975, n2 - 1) * sd_2 / sqrt(n2), 1)
+   ci_mean_all = round(mean_all + c(-1, 1) * qt(0.975, n - 1) * sd_all / sqrt(n), 1)
+   
+   rel_eff = round(np_ana$Analysis$Estimator, 1)
+   rel_eff_ci = round(c(np_ana$Analysis$Lower, np_ana$Analysis$Upper), 1)
+   rel_eff_pval = p_val_format(np_ana$Analysis$p.Value) # ifelse((n1 >= 4 & n2 >= 4), p_val_format(np_ana$Analysis$p.Value), NA)
+   
+   
+   summary_g1 = c(paste0(mean_1, " (", ci_mean_g1[1], ", ", ci_mean_g1[2], ")"), sd_1, round(summary(g1)[-4], 1))
+   summary_g2 = c(paste0(mean_2, " (", ci_mean_g2[1], ", ", ci_mean_g2[2], ")"), sd_2, round(summary(g2)[-4], 1))
+   summary_tot = c(paste0(mean_all, " (", ci_mean_all[1], ", ", ci_mean_all[2], ")"), sd_all, round(summary(x)[-4], 1))
+   
+   
+   if(any(is.na(g1) & all(!is.na(g2)))) summary_g2 = c(summary_g2, 0)
+   if(any(is.na(g2) & all(!is.na(g1)))) summary_g1 = c(summary_g1, 0)
+
+   ret_df = data.frame("Value" = names, grp1 = summary_g1, grp2 = summary_g2, grp_tot = summary_tot)
+   ret_df$wmw = paste0(rel_eff, " (", rel_eff_ci[1], ", ", rel_eff_ci[2], ")")
+   ret_df$pval = rel_eff_pval
+   
+    colnames(ret_df) = c("Metric", grp_levels, "Total", "WMW Effect" ,"p-val")
+   return(ret_df)
+ }
+# 
+summary_nom_groups = function(x, grp, suppress_NA = FALSE, decim = 1){
+  if(suppress_NA == T){
+    handle_NA = "no"
+  } else {
+    handle_NA = "ifany"
+  }
+  
+  if(is.factor(grp)){
+     grp_levels = levels(grp)
+   } else if(is.character(grp)){
+     grp_levels = unique(grp)
+   }
+   g1 = x[which(grp == grp_levels[1])]
+   g2 = x[which(grp == grp_levels[2])]
+
+  names = c("n", "%", "% without NA")
+
+  tot_tab = table(x, grp, useNA = handle_NA)
+
+  tot_tab_woNA = table(x, grp, useNA = "no")
+
+  if(any(is.na(rownames(tot_tab)))){
+    rownames(tot_tab)[which(is.na(rownames(tot_tab)))] = "NA"
+    sum_g1_woNA = c(round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim), NA)
+    sum_g2_woNA = c(round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim), NA)
+    sum_all_woNA = c(round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim), NA)
+  } else {
+    sum_g1_woNA = round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim)
+    sum_g2_woNA = round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim)
+    sum_all_woNA = round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim)
+  }
+
+  summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim), sum_g1_woNA)
+  summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim), sum_g2_woNA)
+  summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim), sum_all_woNA)
+  
+  # if(any(is.na(rownames(tot_tab)))){
+  #   rownames(tot_tab)[which(is.na(rownames(tot_tab)))] = "NA"
+  #   sum_g1_woNA = c(round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim), NA)
+  #   sum_g2_woNA = c(round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim), NA)
+  #   sum_all_woNA = c(round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim), NA)
+  # summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim), sum_g1_woNA)
+  # summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim), sum_g2_woNA)
+  # summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim), sum_all_woNA)
+  # names = c("n", "%", "% without NA")
+  # } else {
+  #   # sum_g1_woNA = round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim)
+  #   # sum_g2_woNA = round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim)
+  #   # sum_all_woNA = round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim)
+  #   summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim))
+  # summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim))
+  # summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim))
+  #   names = c("n", "%")
+  # }
+
+  #if(sum(!is.na(g1)) >= 4 & sum(!is.na(g2)) >= 4){
+    pval_chisq = p_val_format(chisq.test(tot_tab)$p.value)
+  #} else {
+  #  pval_chisq = NA
+  #}
+  ret_df = cbind(summary_g1, summary_g2, summary_tot,rep(pval_chisq,nrow(summary_tot)))
+
+  rownames(ret_df) = rownames(tot_tab)
+  ret_df = cbind(data.frame(Value = rownames(ret_df)), ret_df)
+  colnames(ret_df) = c("Value", paste0(names, "(", grp_levels[1], ")"), paste0(names, "(", grp_levels[2], ")"), paste0(names, "(Total)"), "p-val")
+  return(ret_df)
+}
+# 
+summary_ord_groups = function(x, grp, decim = 1, suppress_NA = FALSE){
+  if(suppress_NA == T){
+    handle_NA = "no"
+  } else {
+    handle_NA = "ifany"
+  }
+
+  if(is.factor(grp)){
+     grp_levels = levels(grp)
+   } else if(is.character(grp)){
+     grp_levels = unique(grp)
+   }
+   g1 = x[which(grp == grp_levels[1])]
+   g2 = x[which(grp == grp_levels[2])]
+   
+   n1 = sum(!is.na(g1))
+   n2 = sum(!is.na(g2))
+   
+   temp_df = data.frame(val = rank(x), grp = grp)
+   np_ana  = nparcomp::npar.t.test(val ~ grp, temp_df, nperm = 0, info = F)
+
+  names = c("n", "%", "% without NA")
+
+  tot_tab = table(x, grp, useNA = handle_NA)
+  tot_tab_woNA = table(x, grp, useNA = "no")
+  
+   rel_eff = round(np_ana$Analysis$Estimator, 1)
+   rel_eff_ci = round(c(np_ana$Analysis$Lower, np_ana$Analysis$Upper), 1)
+   rel_eff_pval = p_val_format(np_ana$Analysis$p.Value) # ifelse((n1 >= 4 & n2 >= 4), p_val_format(np_ana$Analysis$p.Value), NA)
+
+  if(any(is.na(rownames(tot_tab)))){
+    rownames(tot_tab)[which(is.na(rownames(tot_tab)))] = "NA"
+    sum_g1_woNA = c(round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100,1), NA)
+    sum_g2_woNA = c(round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100,1), NA)
+    sum_all_woNA = c(round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, 1), NA)
+  } else {
+    sum_g1_woNA = round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100,1)
+    sum_g2_woNA = round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100,1)
+    sum_all_woNA = round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, 1)
+  }
+  summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100,1), sum_g1_woNA)
+  summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100,1), sum_g2_woNA)
+  summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, 1), sum_all_woNA)
+   
+  #  if(any(is.na(rownames(tot_tab)))){
+  #   rownames(tot_tab)[which(is.na(rownames(tot_tab)))] = "NA"
+  #   sum_g1_woNA = c(round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim), NA)
+  #   sum_g2_woNA = c(round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim), NA)
+  #   sum_all_woNA = c(round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim), NA)
+  # summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim), sum_g1_woNA)
+  # summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim), sum_g2_woNA)
+  # summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim), sum_all_woNA)
+  # names = c("n", "%", "% without NA")
+  # } else {
+  #   # sum_g1_woNA = round(tot_tab_woNA[,1] / sum(tot_tab_woNA[,1]) * 100, decim)
+  #   # sum_g2_woNA = round(tot_tab_woNA[,2] / sum(tot_tab_woNA[,2]) * 100, decim)
+  #   # sum_all_woNA = round(rowSums(tot_tab_woNA) / sum(rowSums(tot_tab_woNA)) * 100, decim)
+  #   summary_g1 = data.frame(tot_tab[,1], round(tot_tab[,1] / sum(tot_tab[,1]) * 100, decim))
+  # summary_g2 = data.frame(tot_tab[,2], round(tot_tab[,2] / sum(tot_tab[,2]) * 100, decim))
+  # summary_tot = data.frame(rowSums(tot_tab), round(rowSums(tot_tab) / sum(rowSums(tot_tab)) * 100, decim))
+  #   names = c("n", "%")
+  # }
+
+  # if(!is.numeric(x) & is.ordered(x)){
+  #   temp_frame = data.frame(val = as.numeric(x), grp = grp)
+  # } else {
+  #   temp_frame = data.frame(val = x, grp = grp)
+  # }
+  
+  
+  
+  ret_df = cbind(summary_g1, summary_g2, summary_tot)
+
+  rownames(ret_df) = rownames(tot_tab)
+  ret_df = cbind(data.frame(Value = rownames(ret_df)), ret_df)
+  ret_df = as.data.frame(ret_df)
+  ret_df$wmw = paste0(rel_eff, " (", rel_eff_ci[1], ", ", rel_eff_ci[2], ")")
+  ret_df$pval = rel_eff_pval
+   
+  colnames(ret_df) = c("Value", paste0(names, "(", grp_levels[1], ")"), paste0(names, "(", grp_levels[2], ")"), paste0(names, "(Total)"), "WMW Effect", "p-val")
+  return(ret_df)
+
+}
+
+p_val_format = function(x){
+  y = character(1)
+  if(x < 0.001){
+    y = "P<.001"
+  } else if(x >= 0.001 & x < 0.01){
+    y = substr(as.character(round(x, 3)), 2, 6)
+  } else if(x >= 0.01 & x <= 0.99){
+    y = substr(as.character(round(x, 2)), 2, 6)
+  } else if(x > 0.99){
+    y = "P>.99"
+  }
+}
+
+wilson_ci = function(x, y, alpha = 0.05, decim = 1){ # x = Successes, y = Failures
+  n = x + y
+  prop = x / n
+  z = qnorm(1-alpha/2)
+  ci_lower = 1 / (1 + z**2 / n) * (prop + z**2 / (2*n) - z / (2*n) * sqrt(4 * n * prop * (1-prop) + z**2))
+  ci_upper = 1 / (1 + z**2 / n) * (prop + z**2 / (2*n) + z / (2*n) * sqrt(4 * n * prop * (1-prop) + z**2))
+  return(round(c(ci_lower, ci_upper), decim))
+}
+
+print_wilson = function(x, y, alpha = 0.05, decim = 1){
+  n = x + y
+  prop = round(x / n, decim)
+  ci = round(wilson_ci(x, y, alpha), decim)
+  print(paste0(prop, " (", ci[1], ", ", ci[2], ")"))
+}
+
+# Renaming of Variables
+ind_pp = c(5, 51, 55:61, 4, 7, 20, 37, 39, 40, 43, 52, 47, 48, 49, 1, 32, 80,
+             88, 94, 96, 97, 98, 68:71, 75, 82, 95)
+
+ind_fu = c(10:14, 7, 8, 9, 16, 17)
+
+names_new_prepost = read.csv2("pre_post_vars_r.csv")
+
+names_new_fu = read.csv2("FU_vars_r.csv")
+
+colnames(pre_post_dat2)[ind_pp] = names_new_prepost[,3]
+colnames(pre_post_dat2)[51] = "Hematoma volume (cubic cm)"
+colnames(fu_dat2)[ind_fu] = names_new_fu[,3]
+colnames(fu_dat2)[3] = "Study arm"
+
+# Patient 27 Complication Yes in FU
+fu_dat2[27,10] = "Yes"
+```
+
+## Sample Size Calculation
+
+The sample size was planned with a focus on feasibility. Based on the knowledge that about 120 - 150 patients anually undergo cSDH surgery  at Charité, and a prospective recruitment duration of 12 months, a recruitment rate of roughly 40 - 50% was assumed, leading to ca. 50 patients to be included eventually. The primary planning parameter was the recruitment rate (per group). A 95% confidence interval for a recruitment rate of 40% for 25 patients (per group) ranges from 21% (lower) to 61% (upper). If the actual recruitment rate does not fall below 21%, then the recruitment rate is acceptable and the respective data can be used to plan large-scale trials.
+
+## Analysis Set
+
+A total of `{r} length(unique(abc$Record.ID))` unique patients were identified from the database.
+
+Consequently, the analysis set comprised `{r} nrow(pre_post_dat2)` unique patients for the period from baseline to post-surgery and `{r} nrow(fu_dat2)` unique patients for the 30-day follow up. For each variable, we report the number of non-missing observations in brackets.
+
+These patients correspond to the following recruitment rates (Wilson-Score confidence intervals in brackets):
+
+-   Consent rate: Of 167 screened patients, after exclusion of further 88 patients, 28 of the remaining 79 declined to participate: `{r} paste0(round((79-28)/79, 2), " (", wilson_ci(79-28,28,decim=2)[1], ", ", wilson_ci(79-28,28,decim=2)[2], ")")`
+
+-   Recruitment rate: Of 167 screened patients, 117 were excluded and 50 remained for randomization: `{r} paste0(round((167-117)/167, 2), " (", wilson_ci(50,117,decim=2)[1], ", ", wilson_ci(50,117,decim=2)[2], ")")`
+
+For both confidence intervals (and consequently the point estimators), the lower bound lies above the 21% boundary that was required during the sample size planning to deem the trial feasible in terms of recruitment.
+
+## Statistical Analysis
+
+This study employs a mainly descriptive approach to analyze the data. Summary statistics are presented for all variables of interest:
+
+-   For continuous variables, both mean and standard deviation are reported alongside Tukey's five-number summary (minimum, 25th percentile, median, 75th percentile, maximum).
+-   For categorical variables, absolute frequencies (n) as well as relative frequencies (%) with respect to treatment group size are reported.
+-   To compare two groups of continuous or at least ordinally scaled variables regarding their stochastic dominance, the Brunner-Munzel Test is employed. The underlying statistical effect ("Wilcoxon-Mann-Whitney Effect" (WMW Effect)), which will also be reported, describes whether one group tends to larger or smaller values than the other. In our case, this represents the probability that the local anesthesia group (LA) takes smaller values than the general anesthesia group (GA), i.e. $P(X_{LA} < X_{GA}) + 0.5 \cdot P(X_{LA} = X_{GA})$. Thus, a WMW Effect of smaller than 0.5 implies that the LA group stochastically tends to larger values than the GA group. This procedure offers a greater robustness than parametric tests as the t-test.
+-   To compare the distributions of categorical-nominal variables, Chi-Square Tests are employed.
+-   Generally, if not stated otherwise, numbers have been rounded to the first decimal. P-values have been formatted according to the formatting style of the JAMA Network.
+-   For confidence intervals, we generally employ a confidence level of $1 - \alpha = 0.95$. For means, a t-distribution has been used, for the WMW Effect an asymptotic logit approximation was employed and for proportions a Wilson-Score interval based on the normal distribution has been used. Confidence intervals are reported in round brackets after the respective effect size.
+-   P-values should be interpreted cautiously and in a descriptive manner. Especially for the employed chi-square-tests, asymptotic requirements are not met.
+-   Due to the exploratory, descriptive nature of the study, no correction for multiple testing was employed.
+-   Missing values are reported. Missing values are not imputed. For each categorical variable, we report relative frequencies with respect to all available data and with respect to non-missing data.
+
+### Descriptive Statistics
+
+#### Characteristics at Baseline
+
+```{r}
+#| echo: false
+# Continuous Variables
+# Age(5), Tumor Size (51), Lab-Values (55 - 62)
+# 62 continuous, but contains values as "< 0.6" 
+ind = c(5,51,55:61)
+cont_list = apply(pre_post_dat2[,ind], 2, summary_cont_groups, grp = pre_post_dat2[,"Study arm"])
+for(i in 1:length(ind)){
+  temp = tapply(pre_post_dat2[,ind[i]], pre_post_dat2[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+  name_rep = paste0(colnames(pre_post_dat2)[ind[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+  cont_list[[i]] = cbind(as.data.frame(rep(name_rep, 7)), summary_cont_groups_base(pre_post_dat2[,ind[i]], pre_post_dat2[,"Study arm"]))
+}
+cont_tab = Reduce(rbind, cont_list)
+colnames(cont_tab)[1] = "Variable"
+
+# Categorical Variables ( Nominal )
+# Sex (4), Side (7), Pre-OP Delir(20), Sicknesses(37), Headbump(39), Thrombo (40),
+# Antikoagula(43), "Fischblutig"(52)
+ind_cat = c(4,7,20,37,39,40,43,52)
+cat_list = list()
+for(i in 1:length(ind_cat)){
+  temp_tab = summary_nom_groups_base(pre_post_dat2[,ind_cat[i]], pre_post_dat2[,"Study arm"])
+  temp = tapply(pre_post_dat2[,ind_cat[i]], pre_post_dat2[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+  name_rep = paste0(colnames(pre_post_dat2)[ind_cat[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+  cat_list[[i]] = cbind(as.data.frame(rep(name_rep,nrow(temp_tab))), temp_tab)
+}
+cat_tab = Reduce(rbind, cat_list)
+colnames(cat_tab)[1] = c("Variable")
+rownames(cat_tab) = NULL
+
+
+# Categorical Variables ( Ordinal )
+# mRS(48), Markwalder(49), Baseline GCS (47)
+ind_ord = c(47, 48, 49)
+ord_list = list()
+for(i in 1:length(ind_ord)){
+  temp_tab = summary_ord_groups_base(pre_post_dat2[, ind_ord[i]], pre_post_dat2[,"Study arm"])
+  temp = tapply(pre_post_dat2[,ind_ord[i]], pre_post_dat2[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+  name_rep = paste0(colnames(pre_post_dat2)[ind_ord[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+  ord_list[[i]] = cbind(as.data.frame(rep(name_rep, nrow(temp_tab))), temp_tab)
+}
+ord_tab = Reduce(rbind, ord_list)
+colnames(ord_tab)[1]= "Variable"
+
+```
+
+```{r}
+#| echo: false
+#| fig-width: 8
+#| fig-height: 6
+
+cont_ft <- cont_tab |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  # Ausrichtung (entspricht align = "c")
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |> 
+  merge_v(j = ncol(cont_tab) - 1) |>
+  merge_v(j = ncol(cont_tab)) |> # Vertikales Verbinden der letzten Spalte
+  autofit() |>
+  theme_zebra()
+
+cont_ft
+
+```
+
+```{r}
+#| echo: false
+
+
+ord_ft <- ord_tab |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |> 
+  merge_v(j = ncol(ord_tab) - 1) |>
+  merge_v(j = ncol(ord_tab)) |>
+  autofit() |>
+  theme_zebra()
+
+ord_ft
+```
+
+```{r}
+#| echo: false
+
+
+cat_ft <- cat_tab |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(cat_tab)) |>
+  autofit() |>
+  theme_zebra()
+
+cat_ft
+```
+
+#### Characteristics at Discharge
+
+For the analysis of discharge (i.e. post surgery) characteristics, the following should be noted: In total, `{r} complications_total_post` (GA: `{r} compl_full_post`; LA: `{r} compl_awake_post`) patients experienced complications. Consequently, those who did not experience any, produce missing values for certain variables, since these are not applicable (e.g.: Clavien-Dindo). Similarly, patients who suffered death (Total: `{r} dead_total_post`; GA: `{r} dead_full_post`; LA: `{r} dead_awake_post`) produce missing values for inapplicable variables (e.g.: GCS).
+
+##### Complications
+
+For a more detailed understanding, we have rounded numbers to the second instead of the first decimal for the variable complications.
+
+```{r}
+#| echo: false
+
+compl_dat = pre_post_dat2[,c(1,32,88)]
+temp_compl = summary_nom_groups(compl_dat[,3], compl_dat[,2], decim = 2)
+temp = tapply(compl_dat[,3], compl_dat[,2], FUN = function(x) sum(!is.na(x)))
+name_rep = paste0("Complications (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+tab11 = cbind(as.data.frame(rep(name_rep, nrow(temp_compl))), temp_compl)
+
+tab_raw_cp = table(compl_dat[,2], compl_dat[,3])
+
+# ci for incidences (binom prop wilson)
+cp_prop_la = round(tab_raw_cp[1,2] / (tab_raw_cp[1,1]+ tab_raw_cp[1,2]), 2)
+cp_prop_ga = round(tab_raw_cp[2,2] / (tab_raw_cp[2,1] + tab_raw_cp[2,2]), 2)
+cp_prop_all = round((tab_raw_cp[2,2] + tab_raw_cp[1,2]) / sum(tab_raw_cp), 2)
+cp_ci_ga = wilson_ci(tab_raw_cp[2,2], tab_raw_cp[2,1], decim = 2)
+cp_ci_la = wilson_ci(tab_raw_cp[1,2], tab_raw_cp[1,1], decim = 2)
+cp_ci_all = wilson_ci(tab_raw_cp[2,2] + tab_raw_cp[1,2], tab_raw_cp[2,1] + tab_raw_cp[1,1], decim = 2)
+
+cp_or_wake_full = round((tab_raw_cp[1,2] / tab_raw_cp[1,1]) / (tab_raw_cp[2,2] / tab_raw_cp[2,1]), 2) # [2,1] / [2,2] is Odds for Complications in GA;
+
+# Large Sample CI (normal approx)
+cp_log_or = log(cp_or_wake_full)
+cp_log_se = sqrt(1/tab_raw_cp[2,1] + 1/tab_raw_cp[2,2] + 1/tab_raw_cp[1,1] + 1/tab_raw_cp[1,2])
+
+cp_log_ci = c(cp_log_or - qnorm(0.975) * cp_log_se, cp_log_or + qnorm(0.975) * cp_log_se)
+cp_ci = round(exp(cp_log_ci), 2)
+
+# NNT
+cp_EER = tab_raw_cp[1,2] / sum(tab_raw_cp[1,]) # Is LA experimental or control group in this interpretation?
+cp_CER = tab_raw_cp[2,2] / sum(tab_raw_cp[2,])
+cp_NNT = ceiling(round(1 / (cp_CER - cp_EER), 2))
+```
+
+###### Frequencies and Proportions
+
+```{r}
+#| echo: false
+
+tab1_ft_cp <- tab11 |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(tab11)) |>
+  autofit() |>
+  theme_zebra()
+
+tab1_ft_cp
+
+```
+
+The proportion of complications (Wilson-Score Confidence Interval in brackets) is:
+
+-   LA Group: `{r} cp_prop_la` (`{r} cp_ci_la[1]`, `{r} cp_ci_la[2]`)
+-   GA Group: `{r} cp_prop_ga` (`{r} cp_ci_ga[1]`, `{r} cp_ci_ga[2]`)
+-   Overall: `{r} cp_prop_all` (`{r} cp_ci_all[1]`, `{r} cp_ci_all[2]`)
+
+###### Odds Ratio and Number Needed to Treat
+
+The odds ratio of experiencing complications (LA) to experiencing complications (GA) together with it's asymptotic confidence interval in brackets is: `{r} cp_or_wake_full` (`{r} cp_ci[1]`, `{r} cp_ci[2]`), i.e. the odds of having complications after surgery with local anesthesia is `{r} cp_or_wake_full` -fold. The Number Needed to Treat (NNT) is `{r} cp_NNT`.
+
+##### Delirium at Discharge
+
+For a more detailed understanding, we have rounded numbers to the second instead of the first decimal for the variable delirium.
+
+```{r}
+#| echo: false
+
+delir_dat = pre_post_dat2[,c(1,32,80)]
+temp_delir = summary_nom_groups(delir_dat[,3], delir_dat[,2], decim = 2)
+
+temp = tapply(delir_dat[,3], delir_dat[,2], FUN = function(x) sum(!is.na(x)))
+name_rep = paste0("Delirium (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+tab1 = cbind(as.data.frame(rep(name_rep, nrow(temp_compl))), temp_delir)
+
+tab_raw = table(delir_dat[,2], delir_dat[,3])
+
+# ci for incidences (binom prop wilson)
+prop_la = round(tab_raw[1,2] / (tab_raw[1,1]+ tab_raw[1,2]), 2)
+prop_ga = round(tab_raw[2,2] / (tab_raw[2,1] + tab_raw[2,2]), 2)
+prop_all = round((tab_raw[2,2] + tab_raw[1,2]) / sum(tab_raw), 2)
+ci_ga = wilson_ci(tab_raw[2,2], tab_raw[2,1], decim = 2)
+ci_la = wilson_ci(tab_raw[1,2], tab_raw[1,1], decim = 2)
+ci_all = wilson_ci(tab_raw[2,2] + tab_raw[1,2], tab_raw[2,1] + tab_raw[1,1], decim = 2)
+
+or_wake_full = round((tab_raw[1,2] / tab_raw[1,1]) / (tab_raw[2,2] / tab_raw[2,1]), 2) # [2,1] / [2,2] is Odds for Delir in GA;
+
+# Large Sample CI (normal approx)
+log_or = log(or_wake_full)
+log_se = sqrt(1/tab_raw[2,1] + 1/tab_raw[2,2] + 1/tab_raw[1,1] + 1/tab_raw[1,2])
+
+log_ci = c(log_or - qnorm(0.975) * log_se, log_or + qnorm(0.975) * log_se)
+ci = round(exp(log_ci), 2)
+
+# NNT
+EER = tab_raw[1,2] / sum(tab_raw[1,]) # Is LA experimental or control group in this interpretation?
+CER = tab_raw[2,2] / sum(tab_raw[2,])
+NNT = ceiling(round(1 / (CER - EER), 2))
+
+```
+
+###### Frequencies and Proportions
+
+```{r}
+#| echo: false
+
+tab1_ft <- tab1 |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(tab1)) |>
+  autofit() |>
+  theme_zebra()
+
+tab1_ft
+
+```
+
+The proportion of delirium (Wilson-Score Confidence Interval in brackets) is:
+
+-   LA Group: `{r} prop_la` (`{r} ci_la[1]`, `{r} ci_la[2]`)
+-   GA Group: `{r} prop_ga` (`{r} ci_ga[1]`, `{r} ci_ga[2]`)
+-   Overall: `{r} prop_all` (`{r} ci_all[1]`, `{r} ci_all[2]`)
+
+###### Odds Ratio and Number Needed to Treat
+
+The odds ratio of experiencing delirium (LA) to experiencing delirium (GA) together with it's asymptotic confidence interval in brackets is: `{r} or_wake_full` (`{r} ci[1]`, `{r} ci[2]`), i.e. the odds of having delirium after surgery with local anesthesia is `{r} or_wake_full` -fold. The Number Needed to Treat (NNT) is `{r} NNT`.
+
+```{r}
+#| echo: false
+
+# # Relevant Columns:
+  # # Nominal
+   #  77: Verbleib, 80: Delir, 88: Komplikationen
+   # Verbleib (77) erstmal entfernen
+# ind_cat = c(88)
+# cat_list = list()
+# for(i in 1:length(ind_cat)){
+#   temp_tab = summary_nom_groups(pre_post_dat2[,ind_cat[i]], pre_post_dat2[,"Study arm"])
+#   temp = tapply(pre_post_dat2[,ind_cat[i]], pre_post_dat2[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+#   name_rep = paste0(colnames(pre_post_dat2)[ind_cat[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+#   cat_list[[i]] = cbind(as.data.frame(rep(name_rep,nrow(temp_tab))), temp_tab)
+# }
+# cat_tab_po = Reduce(rbind, cat_list)
+# colnames(cat_tab_po)[1] = c("Variable")
+# rownames(cat_tab_po) = NULL
+
+  # # Ordinal
+   # 94: Clavien Dindo, 96: GCS, 97: mRS, 98: Markwalder
+   # suppress missings of GCS (96)
+ind_ord = c(94,96,97,98)
+ord_list = list()
+for(i in 1:length(ind_ord)){
+  if(ind_ord[i] == 96){temp_sup = F} else {temp_sup = F}
+  temp_tab = summary_ord_groups(pre_post_dat2[, ind_ord[i]], pre_post_dat2[,"Study arm"], suppress_NA = temp_sup)
+  temp = tapply(pre_post_dat2[,ind_ord[i]], pre_post_dat2[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+  name_rep = paste0(colnames(pre_post_dat2)[ind_ord[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+  ord_list[[i]] = cbind(as.data.frame(rep(name_rep, nrow(temp_tab))), temp_tab)
+}
+ord_tab_po = Reduce(rbind, ord_list)
+colnames(ord_tab_po)[1]= "Variable"
+
+
+ind = c(69,71, 75, 82,95)
+cont_list = list() #apply(pre_post_dat2[,ind], 2, summary_cont_groups, grp = pre_post_dat2[,"Study arm"])
+for(i in 1:length(ind)){
+  temp_tab = summary_cont_groups(pre_post_dat2[,ind[i]], pre_post_dat2[,"Study arm"])
+  temp = tapply(pre_post_dat2[,ind[i]], pre_post_dat2[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+  name_rep = paste0(colnames(pre_post_dat2)[ind[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+  cont_list[[i]] = cbind(rep(name_rep, nrow(temp_tab)), temp_tab)
+}
+cont_tab_po = Reduce(rbind, cont_list)
+colnames(cont_tab_po)[1] = "Variable"
+
+
+```
+
+##### Secondary Endpoints
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+#| echo: false
+
+cont_ft_po <- cont_tab_po |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  # Ausrichtung (entspricht align = "c")
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(cont_tab_po) - 1) |>
+  merge_v(j = ncol(cont_tab_po)) |> # Vertikales Verbinden der letzten Spalte
+  autofit() |>
+  theme_zebra()
+
+cont_ft_po
+
+# cat_ft_po <- cat_tab_po |>
+#   flextable() |> fontsize(size = 6, part = "all") |>
+#   align(align = "center", part = "all") |>
+#   merge_v(j = 1) |>
+#   merge_v(j = ncol(cat_tab_po)) |>
+#   autofit() |>
+#   theme_zebra()
+# 
+# cat_ft_po
+
+
+
+# cont_tab_po |> group_by(Variable) |> 
+#   kbl(booktabs = T, align = "c") |> 
+#   kable_styling(full_width = T, latex_options = "striped") |>
+#   column_spec(2, border_right = "1px solid black") |> # Linie nach Spalte 2
+#   column_spec(4, border_right = "1px solid black") |>
+#   column_spec(5, border_right = "1px solid black") |>
+#   collapse_rows(columns = c(1,ncol(cont_tab_po)))
+# 
+# 
+# 
+# ord_tab_po |> group_by(Variable) |>
+#   kbl(booktabs = T, align = "c") |>
+#   kable_styling(full_width = T, latex_options = "striped") |>
+#   column_spec(2, border_right = "1px solid black") |> # Linie nach Spalte 2
+#   column_spec(5, border_right = "1px solid black") |> # Linie nach Spalte 4
+#   column_spec(8, border_right = "1px solid black")  |> # Linie nach Spalte 6
+#   column_spec(11, border_right = "1px solid black") |> # Linie nach Spalte 8
+#   collapse_rows(columns = c(1, ncol(ord_tab_po)))
+# 
+# 
+# cat_tab_po |> group_by(Variable) |>
+#   kbl(booktabs = T, align = "c") |> 
+#   kable_styling(full_width = T, latex_options = "striped") |>
+#   column_spec(2, border_right = "1px solid black") |> # Linie nach Spalte 2
+#   column_spec(5, border_right = "1px solid black") |> # Linie nach Spalte 4
+#   column_spec(8, border_right = "1px solid black") |>  # Linie nach Spalte 6
+#   column_spec(11, border_right = "1px solid black") |> # Linie nach Spalte 8
+#   collapse_rows(columns = c(1, ncol(cat_tab_po)))
+
+
+```
+
+```{r}
+#| echo: false
+
+
+ord_ft_po <- ord_tab_po |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(ord_tab_po) - 1) |>
+  merge_v(j = ncol(ord_tab_po)) |>
+  autofit() |>
+  theme_zebra()
+
+ord_ft_po
+```
+
+#### Characteristics at 30-Day Follow-Up
+
+For the analysis of the data on the 30-day follow up, the following points should be noted: `{r} sum(fu_dat2[,4] == "No" & is.na(fu_dat2[,8]))` patients could not be reached and should be considered "loss-to-followup". These patients have been excluded from the following analysis.
+
+Additionally, similar to the discharge analysis, the patients who have not experienced complications (Total: `{r} complications_total_fu`; GA: `{r} compl_full_fu`; LA: `{r} compl_awake_fu`) or patients who died (Total: `{r} dead_total_fu`; GA: `{r} dead_full_fu`; LA: `{r} dead_awake_fu`) produce missing values for inapplicable variables (e.g.: Clavien-Dindo or GCS, respectively).
+
+##### Complications
+
+For a more detailed understanding, we have rounded numbers to the second instead of the first decimal for the variable complications.
+
+```{r}
+#| echo: false
+
+compl_dat_fu = fu_dat2[,c(1,3,10)]
+temp_compl = summary_nom_groups(compl_dat_fu[,3], compl_dat_fu[,2], decim = 2)
+
+temp = tapply(compl_dat_fu[,3], compl_dat_fu[,2], FUN = function(x) sum(!is.na(x)))
+name_rep = paste0("Complications (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+tab11_fu = cbind(as.data.frame(rep(name_rep, nrow(temp_compl))), temp_compl)
+
+
+tab_raw_cp_fu = table(compl_dat_fu[,2], compl_dat_fu[,3])
+
+# ci for incidences (binom prop wilson)
+cp_prop_la_fu = round(tab_raw_cp_fu[1,2] / (tab_raw_cp_fu[1,1]+ tab_raw_cp_fu[1,2]), 2)
+cp_prop_ga_fu = round(tab_raw_cp_fu[2,2] / (tab_raw_cp_fu[2,1] + tab_raw_cp_fu[2,2]), 2)
+cp_prop_all_fu = round((tab_raw_cp_fu[2,2] + tab_raw_cp_fu[1,2]) / sum(tab_raw_cp_fu), 2)
+cp_ci_ga_fu = wilson_ci(tab_raw_cp_fu[2,2], tab_raw_cp_fu[2,1], decim = 2)
+cp_ci_la_fu = wilson_ci(tab_raw_cp_fu[1,2], tab_raw_cp_fu[1,1], decim = 2)
+cp_ci_all_fu = wilson_ci(tab_raw_cp_fu[2,2] + tab_raw_cp_fu[1,2], tab_raw_cp_fu[2,1] + tab_raw_cp_fu[1,1], decim = 2)
+
+cp_or_wake_full_fu = round((tab_raw_cp_fu[1,2] / tab_raw_cp_fu[1,1]) / (tab_raw_cp_fu[2,2] / tab_raw_cp_fu[2,1]), 2) # [2,1] / [2,2] is Odds for Complications in GA;
+
+# Large Sample CI (normal approx)
+cp_log_or_fu = log(cp_or_wake_full_fu)
+cp_log_se_fu = sqrt(1/tab_raw_cp_fu[2,1] + 1/tab_raw_cp_fu[2,2] + 1/tab_raw_cp_fu[1,1] + 1/tab_raw_cp_fu[1,2])
+
+cp_log_ci_fu = c(cp_log_or_fu - qnorm(0.975) * cp_log_se_fu, cp_log_or_fu + qnorm(0.975) * cp_log_se_fu)
+cp_ci_fu = round(exp(cp_log_ci_fu), 2)
+
+# NNT
+cp_EER_fu = tab_raw_cp_fu[1,2] / sum(tab_raw_cp_fu[1,]) # Is LA experimental or control group in this interpretation?
+cp_CER_fu = tab_raw_cp_fu[2,2] / sum(tab_raw_cp_fu[2,])
+cp_NNT_fu = ceiling(round(1 / (cp_CER_fu - cp_EER_fu), 2))
+```
+
+###### Frequencies and Proportions
+
+```{r}
+#| echo: false
+
+tab1_ft_cp_fu <- tab11_fu |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(tab11_fu)) |>
+  autofit() |>
+  theme_zebra()
+tab1_ft_cp_fu
+
+```
+
+The proportion of complications (Wilson-Score Confidence Interval in brackets) is:
+
+-   LA Group: `{r} cp_prop_la_fu` (`{r} cp_ci_la_fu[1]`, `{r} cp_ci_la_fu[2]`)
+-   GA Group: `{r} cp_prop_ga_fu` (`{r} cp_ci_ga_fu[1]`, `{r} cp_ci_ga_fu[2]`)
+-   Overall: `{r} cp_prop_all_fu` (`{r} cp_ci_all_fu[1]`, `{r} cp_ci_all_fu[2]`)
+
+###### Odds Ratio and Number Needed to Treat
+
+The odds ratio of experiencing complications (LA) to experiencing complications (GA) at 30-day follow-up together with it's asymptotic confidence interval in brackets is: `{r} cp_or_wake_full_fu` (`{r} cp_ci_fu[1]`, `{r} cp_ci_fu[2]`), i.e. the odds of having complications after surgery with local anesthesia is `{r} cp_or_wake_full_fu` -fold. The Number Needed to Treat (NNT) is `{r} cp_NNT_fu`.
+
+##### Secondary Endpoints
+
+```{r}
+#| echo: false
+# FU 30 Days
+  subdat = fu_dat2[which(fu_dat2[,4] == "Yes" | fu_dat2[,8] == 6),] # remove nonresponders but include people dead (at any time)
+  
+    # mRS (ordinal)
+    
+    # Markwalder (ordinal)
+    
+    # GCS (ordinal)
+
+    # CCI (continuous)
+    
+    # komplikationen (nominal)
+
+# # Relevant Columns:
+  # # Nominal
+   #  Komplikationen: 10 - 14
+ind_cat = c(11:14)
+cat_list = list()
+for(i in 1:length(ind_cat)){
+  temp_tab = summary_nom_groups(subdat[,ind_cat[i]], subdat[,"Study arm"])
+  temp = tapply(subdat[,ind_cat[i]], subdat[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+  name_rep = paste0(colnames(subdat)[ind_cat[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+  cat_list[[i]] = cbind(as.data.frame(rep(name_rep,nrow(temp_tab))), temp_tab)
+}
+cat_tab_fu = Reduce(rbind, cat_list)
+colnames(cat_tab_fu)[1] = c("Variable")
+rownames(cat_tab_fu) = NULL
+
+  # # Ordinal
+   # 7: GCS, 8: mRS, 9: Markwalder, 16: Clavien Dindo
+   #
+ind_ord = c(7, 8,9, 16)
+ord_list = list()
+for(i in 1:length(ind_ord)){
+  if(ind_ord[i] == 7){
+    temp_sup = F
+  } else {
+    temp_sup = F
+  }
+  temp_tab = summary_ord_groups(subdat[, ind_ord[i]], subdat[,"Study arm"], suppress_NA = temp_sup)
+  temp = tapply(subdat[,ind_ord[i]], subdat[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+  name_rep = paste0(colnames(subdat)[ind_ord[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+  ord_list[[i]] = cbind(as.data.frame(rep(name_rep, nrow(temp_tab))), temp_tab)
+}
+ord_tab_fu = Reduce(rbind, ord_list)
+colnames(ord_tab_fu)[1]= "Variable"
+
+  # # Continuous
+   #  16: CCI -- index 7??
+
+ind = c(17)
+cont_list = list()#apply(fu_dat2[,ind], 2, summary_cont_groups, grp = fu_dat2[,"Study arm"])
+for(i in 1:length(ind)){
+  temp_tab = summary_cont_groups(subdat[,ind[i]], subdat[,"Study arm"])
+  temp = tapply(subdat[,ind[i]], subdat[,"Study arm"], FUN = function(x) sum(!is.na(x)))
+  name_rep = paste0(colnames(subdat)[ind[i]], " (", paste0("n ", names(temp), ": ", temp, collapse = "; "), ")")
+  cont_list[[i]] = cbind(rep(name_rep, nrow(temp_tab)), temp_tab)
+}
+cont_tab_fu = Reduce(rbind, cont_list)
+colnames(cont_tab_fu)[1] = "Variable"
+
+    
+```
+
+```{r}
+#| fig-width: 8
+#| fig-height: 6
+#| echo: false
+
+
+cont_ft_fu <- cont_tab_fu |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  # Ausrichtung (entspricht align = "c")
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(cont_tab_fu) - 1) |> 
+  merge_v(j = ncol(cont_tab_fu)) |> # Vertikales Verbinden der letzten Spalte
+  autofit() |>
+  theme_zebra()
+
+cont_ft_fu
+
+
+
+# cont_tab_fu |> group_by(Variable) |> 
+#   kbl(booktabs = T, align = "c") |> 
+#   kable_styling(full_width = T, latex_options = "striped") |>
+#   column_spec(2, border_right = "1px solid black") |> # Linie nach Spalte 2
+#   column_spec(4, border_right = "1px solid black") |>
+#   column_spec(5, border_right = "1px solid black") |>
+#   collapse_rows(columns = c(1,ncol(cont_tab_fu))) # Linie nach Spalte 4
+# 
+# 
+# ord_tab_fu |> group_by(Variable) |> 
+#   kbl(booktabs = T, align = "c") |> 
+#   kable_styling(full_width = T, latex_options = "striped") |>
+#   column_spec(2, border_right = "1px solid black") |> # Linie nach Spalte 2
+#   column_spec(5, border_right = "1px solid black") |> # Linie nach Spalte 4
+#   column_spec(8, border_right = "1px solid black") |> # Linie nach Spalte 6
+#   column_spec(11, border_right = "1px solid black") |> # Linie nach Spalte 8
+#   collapse_rows(columns = c(1,ncol(ord_tab_fu)))
+# 
+# 
+# cat_tab_fu |> group_by(Variable) |> 
+#   kbl(booktabs = T, align = "c") |> 
+#   kable_styling(full_width = T, latex_options = "striped") |>
+#   column_spec(2, border_right = "1px solid black") |> # Linie nach Spalte 2
+#   column_spec(5, border_right = "1px solid black") |> # Linie nach Spalte 4
+#   column_spec(8, border_right = "1px solid black") |> # Linie nach Spalte 6
+#   column_spec(11, border_right = "1px solid black") |> # Linie nach Spalte 8
+#   collapse_rows(columns = c(1,ncol(cat_tab_fu)))
+
+```
+
+```{r}
+#| echo: false
+
+
+ord_ft_fu <- ord_tab_fu |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(ord_tab_fu) - 1) |>
+  merge_v(j = ncol(ord_tab_fu)) |>
+  autofit() |>
+  theme_zebra()
+
+ord_ft_fu
+```
+
+```{r}
+#| echo: false
+
+
+
+cat_ft_fu <- cat_tab_fu |>
+  flextable() |> fontsize(size = 6, part = "all") |>
+  align(align = "center", part = "all") |>
+  merge_v(j = 1) |>
+  merge_v(j = ncol(cat_tab_fu)) |>
+  autofit() |>
+  theme_zebra()
+
+cat_ft_fu
+```
+
+### Comparison over Time
+
+```{r}
+#| echo: false
+#| warning: false
+
+# Set up data in long format
+# mrs_prepost
+  mrs_prepost = unlist(c(pre_post_dat2[,colnames(pre_post_dat2)[which(grepl("mRS", colnames(pre_post_dat2)) == T)]]))
+  mrs_fu = (fu_dat2[,8])
+  
+# markwalder_prepost
+  markwalder_prepost = unlist(c(pre_post_dat2[,colnames(pre_post_dat2)[which(grepl("Markwalder", colnames(pre_post_dat2)) == T)]]))
+  markwalder_fu = (fu_dat2[,9])
+  
+df_t3 = data.frame(ID = as.factor(rep(pre_post_dat2[, "Record ID"], 3)), 
+                       mrs = as.factor(c(mrs_prepost, mrs_fu)),
+                      markwalder = as.factor(c(markwalder_prepost, markwalder_fu)),
+                      arm = as.factor(rep(pre_post_dat2[,"Study arm"], 3)),
+                      time = rep(c("A", "B", "C"), each = length(pre_post_dat2[, "Record ID"])), n = 1)
+
+```
+
+#### Flow of mRS over Time
+
+```{r}
+#| echo: false
+#| fig-width: 8
+#| fig-height: 6
+
+# Alluvial Plot mRS & Markwalder
+
+  # Alluvial mRS
+    ggplot(df_t3, aes(x = time, y = n, label = mrs, stratum = mrs, alluvium = ID)) +
+    geom_flow(aes(fill = mrs), stat = "alluvium", aes.flow = "forward") + 
+    geom_stratum(aes(fill = mrs), alpha = 0.5) +
+    geom_text(stat = "stratum") +
+      labs(title = "Alluvial plot of mRS") +
+    scale_x_discrete("", labels = c("A" = "Baseline", "B" = "Discharge", "C"= "FU")) +
+          theme_classic() +
+    theme(legend.position = "none", axis.line = element_blank()) +
+      scale_fill_brewer(palette = "Set1")+
+  facet_wrap(~arm)
+```
+
+#### Flow of Markwalder over Time
+
+```{r}
+#| echo: false
+#| fig-width: 8
+#| fig-height: 6
+
+# Alluvial Markwalder
+    ggplot(df_t3, aes(x = time, y = n, label = markwalder, stratum = markwalder, alluvium = ID)) +
+    geom_flow(aes(fill = markwalder), stat = "alluvium", aes.flow = "forward") + 
+    geom_stratum(aes(fill = markwalder), alpha = 0.5) +
+    geom_text(stat = "stratum") +
+      labs(title = "Alluvial plot of Markwalder Score") +
+    scale_x_discrete("", labels = c("A" = "Baseline", "B" = "Discharge", "C"= "FU")) +
+          theme_classic() +
+    theme(legend.position = "none", axis.line = element_blank()) +
+      scale_fill_brewer(palette = "Set1")+
+  facet_wrap(~arm)
+
+```
+
+# Software
+
+R version 4.3.2 with packages
+
+-   `nparcomp` version 3.0
+
+-   `dplyr` version 1.1.4
+
+-   `ggplot2` version 3.5.1
+
+-   `ggalluvial` version 0.12.5
+
+-   `flextable` version 0.9.7
+
+was used for data pre-processing and statistical analysis.
